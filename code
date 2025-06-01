@@ -1,0 +1,200 @@
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import seaborn as sns
+
+# Thiết lập device
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# 1. Chuẩn bị dữ liệu CIFAR-10
+# Chia tập train thành train và validation
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
+trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+train_size = int(0.8 * len(trainset))
+val_size = len(trainset) - train_size
+train_dataset, val_dataset = torch.utils.data.random_split(trainset, [train_size, val_size])
+
+trainloader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+valloader = torch.utils.data.DataLoader(val_dataset, batch_size=64, shuffle=False)
+testloader = torch.utils.data.DataLoader(testset, batch_size=64, shuffle=False)
+
+classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+# 2. Xây dựng mô hình MLP
+
+class MLP(nn.Module):
+    def __init__(self):
+        super(MLP, self).__init__()
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(32 * 32 * 3, 512)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Linear(512, 256)
+        self.relu2 = nn.ReLU()
+        self.fc3 = nn.Linear(256, 10)
+
+    def forward(self, x):
+        x = self.flatten(x)
+        x = self.fc1(x)
+        x = self.relu1(x)
+        x = self.fc2(x)
+        x = self.relu2(x)
+        x = self.fc3(x)
+        return x
+
+# 3. Xây dựng mô hình CNN
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.relu1 = nn.ReLU()
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.relu2 = nn.ReLU()
+        self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
+        self.relu3 = nn.ReLU()
+        self.pool = nn.MaxPool2d(2, 2)
+        self.fc1 = nn.Linear(128 * 4 * 4, 512)
+        self.relu4 = nn.ReLU()
+        self.fc2 = nn.Linear(512, 10)
+
+    def forward(self, x):
+        x = self.pool(self.relu1(self.conv1(x)))
+        x = self.pool(self.relu2(self.conv2(x)))
+        x = self.pool(self.relu3(self.conv3(x)))
+        x = x.view(-1, 128 * 4 * 4)
+        x = self.relu4(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+# Hàm huấn luyện mô hình
+def train_model(model, trainloader, valloader, epochs=10):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    
+    train_losses, val_losses = [], []
+    train_accs, val_accs = [], []
+    
+    for epoch in range(epochs):
+        # Huấn luyện
+        model.train()
+        running_loss = 0.0
+        correct, total = 0, 0
+        for inputs, labels in trainloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        
+        train_losses.append(running_loss / len(trainloader))
+        train_accs.append(100 * correct / total)
+        
+        # Đánh giá trên tập validation
+        model.eval()
+        val_loss = 0.0
+        correct, total = 0, 0
+        with torch.no_grad():
+            for inputs, labels in valloader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        
+        val_losses.append(val_loss / len(valloader))
+        val_accs.append(100 * correct / total)
+        
+        print(f'Epoch {epoch+1}, Train Loss: {train_losses[-1]:.3f}, Train Acc: {train_accs[-1]:.2f}%, Val Loss: {val_losses[-1]:.3f}, Val Acc: {val_accs[-1]:.2f}%')
+    
+    return train_losses, val_losses, train_accs, val_accs
+
+# Hàm đánh giá trên tập test
+def test_model(model, testloader):
+    model.eval()
+    correct, total = 0, 0
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for inputs, labels in testloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+    
+    print(f'Test Accuracy: {100 * correct / total:.2f}%')
+    return all_preds, all_labels
+
+# Hàm vẽ learning curves
+def plot_learning_curves(train_losses, val_losses, train_accs, val_accs, model_name):
+    plt.figure(figsize=(12, 5))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.title(f'{model_name} - Loss Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accs, label='Train Accuracy')
+    plt.plot(val_accs, label='Validation Accuracy')
+    plt.title(f'{model_name} - Accuracy Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig(f'{model_name}_learning_curves.png')
+    plt.show()
+
+# Hàm vẽ confusion matrix
+def plot_confusion_matrix(labels, preds, model_name):
+    cm = confusion_matrix(labels, preds)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes)
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title(f'{model_name} - Confusion Matrix')
+    plt.savefig(f'{model_name}_confusion_matrix.png')
+    plt.show()
+
+# Huấn luyện và đánh giá MLP
+mlp = MLP().to(device)
+mlp_train_losses, mlp_val_losses, mlp_train_accs, mlp_val_accs = train_model(mlp, trainloader, valloader)
+mlp_preds, mlp_labels = test_model(mlp, testloader)
+plot_learning_curves(mlp_train_losses, mlp_val_losses, mlp_train_accs, mlp_val_accs, 'MLP')
+plot_confusion_matrix(mlp_labels, mlp_preds, 'MLP')
+
+# Huấn luyện và đánh giá CNN
+cnn = CNN().to(device)
+cnn_train_losses, cnn_val_losses, cnn_train_accs, cnn_val_accs = train_model(cnn, trainloader, valloader)
+cnn_preds, cnn_labels = test_model(cnn, testloader)
+plot_learning_curves(cnn_train_losses, cnn_val_losses, cnn_train_accs, cnn_val_accs, 'CNN')
+plot_confusion_matrix(cnn_labels, cnn_preds, 'CNN')
+
+# So sánh kết quả
+print("\nSo sánh kết quả:")
+print(f"MLP Test Accuracy: {mlp_val_accs[-1]:.2f}%")
+print(f"CNN Test Accuracy: {cnn_val_accs[-1]:.2f}%")
